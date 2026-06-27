@@ -10,6 +10,7 @@ import {
   type RouterConfig,
   type RouterErrorKind,
   type RouterEvent,
+  type RouterMetrics,
 } from "./types.js";
 import { AllProvidersFailed, RouterError, fromThrown, mostActionable } from "./errors.js";
 import { backoffDelay, sleep, withRetryAfter } from "./lib/backoff.js";
@@ -20,6 +21,8 @@ const MIN_BUDGET_MS = 50;
 
 export interface Router {
   complete(req: CompleteRequest): Promise<CompleteResult>;
+  /** A snapshot of cumulative activity — wire it into a metrics/health endpoint. */
+  metrics(): RouterMetrics;
 }
 
 export function createRouter(config: RouterConfig): Router {
@@ -27,7 +30,31 @@ export function createRouter(config: RouterConfig): Router {
   const breakerCfg = { ...DEFAULT_BREAKER, ...config.breaker };
   const perAttemptTimeoutMs = config.perAttemptTimeoutMs ?? DEFAULT_PER_ATTEMPT_TIMEOUT_MS;
   const overallDeadlineMs = config.overallDeadlineMs ?? DEFAULT_OVERALL_DEADLINE_MS;
-  const emit = (e: RouterEvent): void => config.onEvent?.(e);
+  const metrics: RouterMetrics = {
+    requests: 0,
+    successes: 0,
+    failures: 0,
+    retries: 0,
+    fallbacks: 0,
+    breakerTrips: 0,
+    coalesced: 0,
+    byProvider: {},
+  };
+  const bump = (id: string, field: "served" | "failed"): void => {
+    (metrics.byProvider[id] ??= { served: 0, failed: 0 })[field]++;
+  };
+
+  // One place to derive metrics from the event stream, then forward to the user.
+  const emit = (e: RouterEvent): void => {
+    if (e.type === "retry") metrics.retries++;
+    else if (e.type === "fallback") metrics.fallbacks++;
+    else if (e.type === "breaker_open") metrics.breakerTrips++;
+    else if (e.type === "success") {
+      metrics.successes++;
+      bump(e.provider, "served");
+    } else if (e.type === "error") bump(e.provider, "failed");
+    config.onEvent?.(e);
+  };
 
   const byId = new Map(config.providers.map((p) => [p.id, p]));
   const defaultChain = config.fallback ?? config.providers.map((p) => p.id);
@@ -39,7 +66,7 @@ export function createRouter(config: RouterConfig): Router {
     (id) => emit({ type: "breaker_close", provider: id }),
   );
 
-  async function complete(req: CompleteRequest): Promise<CompleteResult> {
+  async function run(req: CompleteRequest): Promise<CompleteResult> {
     // Build the candidate chain: requested or default order, de-duped (visited
     // once), and filtered to providers that support the model.
     const chainIds = (req.providers ?? defaultChain).filter((id, i, a) => a.indexOf(id) === i);
@@ -188,7 +215,29 @@ export function createRouter(config: RouterConfig): Router {
     }
   }
 
-  return { complete };
+  // Idempotency: coalesce concurrent calls that share an idempotencyKey so a
+  // retry/duplicate never issues a second upstream request (or a second charge).
+  const inFlight = new Map<string, Promise<CompleteResult>>();
+
+  async function complete(req: CompleteRequest): Promise<CompleteResult> {
+    metrics.requests++;
+    const key = req.idempotencyKey;
+    if (key && inFlight.has(key)) {
+      metrics.coalesced++;
+      return inFlight.get(key)!;
+    }
+    const p = run(req).catch((err: unknown) => {
+      metrics.failures++;
+      throw err;
+    });
+    if (key) {
+      inFlight.set(key, p);
+      void p.finally(() => inFlight.delete(key));
+    }
+    return p;
+  }
+
+  return { complete, metrics: () => structuredClone(metrics) };
 }
 
 function linkSignals(signals: Array<AbortSignal | undefined>): AbortSignal {

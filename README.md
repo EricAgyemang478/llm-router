@@ -64,6 +64,26 @@ res.attempts; // full audit trail of every provider tried
 Two timers bound every call: a **per-attempt timeout** and a **terminal overall
 deadline** that stops all retries/failovers once it fires.
 
+## Enterprise architecture
+
+The reason to use a gateway instead of calling a provider directly:
+
+| Pillar            | How llm-router applies it                                                                                              |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| **Resilience**    | retries (backoff + jitter), per-provider circuit breaker, per-attempt + a terminal overall deadline, graceful failover |
+| **Redundancy**    | an ordered multi-provider fallback chain — no single provider is a point of failure                                    |
+| **Observability** | lifecycle events, a pull-based `metrics()` snapshot, and a per-call `attempts` audit trail (provider, tries, latency)  |
+| **Idempotency**   | an `idempotencyKey` coalesces concurrent identical calls into one upstream request — a retry never double-charges      |
+
+```ts
+// idempotency — a duplicate in-flight call awaits the first instead of charging twice
+await router.complete({ messages, model, idempotencyKey: requestId });
+
+// observability — snapshot counters for a /metrics or health endpoint
+router.metrics();
+// { requests, successes, failures, retries, fallbacks, breakerTrips, coalesced, byProvider }
+```
+
 ## Providers
 
 `openai`, `anthropic`, `openRouter` (real adapters over `fetch`, no SDKs), and

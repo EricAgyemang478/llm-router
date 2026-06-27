@@ -154,3 +154,32 @@ test("emits fallback and success lifecycle events", async () => {
   assert.ok(seen.includes("fallback"));
   assert.ok(seen.includes("success"));
 });
+
+test("idempotency: concurrent calls with the same key coalesce into one upstream request", async () => {
+  const a = mock({ id: "A", script: [{ delayMs: 30, result: { text: "served once" } }] });
+  const router = createRouter({ providers: [a], retry: fast });
+
+  const [r1, r2] = await Promise.all([
+    router.complete({ messages: msg, model: "m", idempotencyKey: "k1" }),
+    router.complete({ messages: msg, model: "m", idempotencyKey: "k1" }),
+  ]);
+
+  assert.equal(r1.text, "served once");
+  assert.equal(r2.text, "served once");
+  assert.equal(a.invocations, 1); // a duplicate call never reached the provider
+  assert.equal(router.metrics().coalesced, 1);
+});
+
+test("metrics() snapshots cumulative activity", async () => {
+  const a = mock({ id: "A", script: [{ error: new RouterError("server", "500", 500) }] });
+  const b = mock({ id: "B", script: [{ result: { text: "B" } }] });
+  const router = createRouter({ providers: [a, b], retry: once });
+
+  await router.complete({ messages: msg, model: "m" });
+  const m = router.metrics();
+  assert.equal(m.requests, 1);
+  assert.equal(m.successes, 1);
+  assert.equal(m.fallbacks, 1);
+  assert.equal(m.byProvider["B"]?.served, 1);
+  assert.equal(m.byProvider["A"]?.failed, 1);
+});

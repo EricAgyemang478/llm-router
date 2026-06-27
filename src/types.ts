@@ -27,6 +27,9 @@ export interface CompleteRequest extends NormalizedRequest {
   providers?: string[];
   /** Override the overall deadline (ms) for this call. */
   deadlineMs?: number;
+  /** Idempotency: a second in-flight call with the same key awaits the first's
+   *  result instead of issuing a duplicate upstream request (no double-charge). */
+  idempotencyKey?: string;
   signal?: AbortSignal;
   metadata?: Record<string, unknown>;
 }
@@ -121,6 +124,18 @@ export type RouterEvent =
   | { type: "breaker_close"; provider: string }
   | { type: "success"; provider: string; attempts: number; costUsd?: number }
   | { type: "error"; provider: string; kind: RouterErrorKind; status?: number };
+
+/** A pull-based snapshot of router activity for dashboards / health checks. */
+export interface RouterMetrics {
+  requests: number;
+  successes: number;
+  failures: number;
+  retries: number;
+  fallbacks: number;
+  breakerTrips: number;
+  coalesced: number;
+  byProvider: Record<string, { served: number; failed: number }>;
+}
 
 export interface RouterConfig {
   providers: LLMProvider[];
