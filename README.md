@@ -7,8 +7,8 @@
 
 A **resilient gateway in front of multiple LLM providers.** When one provider has
 an outage, rate-limits you, or times out, the router automatically **fails over**
-to the next — with retries, circuit breaking, deadlines, and **per-call cost
-tracking** — so your app stays up and your spend stays visible. **Zero runtime
+to the next, with retries, circuit breaking, deadlines, and **per-call cost
+tracking**, so your app stays up and your spend stays visible. **Zero runtime
 dependencies.**
 
 ```mermaid
@@ -56,8 +56,8 @@ res.attempts; // full audit trail of every provider tried
 | -------------------------------- | --------------------------------------------------------------------------------- |
 | **429 rate limit**               | retry on the same provider (honoring `Retry-After`), then fail over               |
 | **5xx / network / timeout**      | retry with exponential backoff + jitter, then fail over                           |
-| **401 / 403 auth**               | no retry — trip the breaker and fail over (alerts on a config problem)            |
-| **content filter / bad request** | surface immediately — futile to retry elsewhere                                   |
+| **401 / 403 auth**               | no retry: trip the breaker and fail over (alerts on a config problem)             |
+| **content filter / bad request** | surface immediately: retrying elsewhere is futile                                 |
 | **a dead provider**              | circuit breaker fast-skips it (no wasted call) until a cooldown probe             |
 | **everything down**              | one `AllProvidersFailed` with the per-provider cause and the most actionable code |
 
@@ -71,15 +71,15 @@ The reason to use a gateway instead of calling a provider directly:
 | Pillar            | How llm-router applies it                                                                                              |
 | ----------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | **Resilience**    | retries (backoff + jitter), per-provider circuit breaker, per-attempt + a terminal overall deadline, graceful failover |
-| **Redundancy**    | an ordered multi-provider fallback chain — no single provider is a point of failure                                    |
+| **Redundancy**    | an ordered multi-provider fallback chain, so no single provider is a point of failure                                  |
 | **Observability** | lifecycle events, a pull-based `metrics()` snapshot, and a per-call `attempts` audit trail (provider, tries, latency)  |
-| **Idempotency**   | an `idempotencyKey` coalesces concurrent identical calls into one upstream request — a retry never double-charges      |
+| **Idempotency**   | an `idempotencyKey` coalesces concurrent identical calls into one upstream request, so a retry never double-charges    |
 
 ```ts
-// idempotency — a duplicate in-flight call awaits the first instead of charging twice
+// idempotency: a duplicate in-flight call awaits the first instead of charging twice
 await router.complete({ messages, model, idempotencyKey: requestId });
 
-// observability — snapshot counters for a /metrics or health endpoint
+// observability: snapshot counters for a /metrics or health endpoint
 router.metrics();
 // { requests, successes, failures, retries, fallbacks, breakerTrips, coalesced, byProvider }
 ```
@@ -87,7 +87,7 @@ router.metrics();
 ## Providers
 
 `openai`, `anthropic`, `openRouter` (real adapters over `fetch`, no SDKs), and
-`mock` — a deterministic, key-free provider used to test every failure mode.
+`mock`: a deterministic, key-free provider used to test every failure mode.
 Adding one is implementing a single `LLMProvider` interface.
 
 ## Why it's trustworthy
@@ -96,7 +96,7 @@ The resilience semantics were designed and then **adversarially audited** for
 retry storms, cyclic fallback, double-charging, and breaker races. The behavior
 is locked down by tests: a **mock-provider failure-mode matrix** exercises happy
 path, fallback, retry-then-succeed, non-retryable skip, breaker fast-skip,
-deadline, and cost accounting — all without touching a real API.
+deadline, and cost accounting, all without touching a real API.
 
 Full design in **[ARCHITECTURE.md](./ARCHITECTURE.md)**.
 
